@@ -4,7 +4,9 @@ An ESPHome external component that works around the ESP32-C6 SYSTIMER fault desc
 [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036): on some chips,
 the counter behind `esp_timer` (SYSTIMER counter 0) suddenly loses minutes to hours.
 
-**Status: experimental.** Use it only if your C6 boards show the symptoms below.
+**Status: experimental.** So far it has been tested only against simulated jumps (see
+[Testing it](#testing-it)); it is running on two affected boards waiting for a real event.
+Use it only if your C6 boards show the symptoms below, and please report how it behaves.
 
 ## Symptoms
 
