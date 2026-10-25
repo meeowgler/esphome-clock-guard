@@ -4,9 +4,17 @@ An ESPHome external component that works around the ESP32-C6 SYSTIMER fault desc
 [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036): on some chips,
 the counter behind `esp_timer` (SYSTIMER counter 0) suddenly loses minutes to hours.
 
-**Status: experimental.** So far it has been tested only against simulated jumps (see
-[Testing it](#testing-it)); it is running on two affected boards waiting for a real event.
+**Status: experimental.** It has corrected one real fault so far (see [Results](#results)).
 Use it only if your C6 boards show the symptoms below, and please report how it behaves.
+
+## Results
+
+- **25 October 2026, first real event:** on the board that had stalled most (20 times in 17
+  days), `esp_timer` lost 2667.577 s (44.5 min). That is exactly bits 28, 29, 30, 31, 32 and 35
+  of the 16 MHz counter cleared at once. The guard put the time back within its 1 ms check, and
+  the board's 60-second uptime reports carried on without a gap; before the guard, the same
+  fault silenced the board for the time lost. Counter 1 did not move backward.
+- Simulated 600 s jumps (see [Testing it](#testing-it)) are corrected to the millisecond.
 
 ## Symptoms
 
