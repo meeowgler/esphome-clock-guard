@@ -1,11 +1,27 @@
-# clock_guard for ESPHome
+# systimer_guard for ESPHome
 
 An ESPHome external component that works around the ESP32-C6 SYSTIMER fault described in
 [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036): on some chips,
-the counter behind `esp_timer` (SYSTIMER counter 0) suddenly loses minutes to hours.
+the counter behind `esp_timer` (SYSTIMER counter 0) suddenly loses minutes to hours, and its
+snapshot handshake can wedge.
 
 **Status: experimental.** It has corrected one real fault so far (see [Results](#results)).
 Use it only if your C6 boards show the symptoms below, and please report how it behaves.
+
+## Related work
+
+[danjurgens/esp32c6-systimer-backstep](https://github.com/danjurgens/esp32c6-systimer-backstep)
+(GPL-3.0) is where this fault was pinned down: a bare ESP-IDF reproducer, the register-level
+analysis showing the bit-clear signature, a ledger of verified events, and its own ESPHome
+`clock_guard` and `loop_watchdog` components, which have absorbed real events in production
+since September 2026. **If you want the established option, use that one.**
+
+This component was written independently, and was called `clock_guard` until 25 October 2026;
+it was renamed to avoid confusion with danjurgens' component of that name. The main
+differences: it compares the two SYSTIMER hardware counters directly, every 1 ms, with
+interrupts off, rather than `esp_timer` against the FreeRTOS tick count; its counters reset at
+boot instead of persisting in NVS; and it has no correction cap, since a backward step can
+never be larger than the counter's own value.
 
 ## Results
 
@@ -15,6 +31,8 @@ Use it only if your C6 boards show the symptoms below, and please report how it 
   the board's 60-second uptime reports carried on without a gap; before the guard, the same
   fault silenced the board for the time lost. Counter 1 did not move backward.
 - Simulated 600 s jumps (see [Testing it](#testing-it)) are corrected to the millisecond.
+- A simulated wedged handshake (`simulate_wedge()`) ends in an abort about a second later, and
+  the board restarts with an `Abort` crash record and reset reason "exception/panic".
 
 ## Symptoms
 
@@ -27,7 +45,8 @@ next scheduled run is then due at a time the clock has to count back up to, so:
 - event-driven work keeps running: a Bluetooth proxy keeps forwarding adverts through it.
 
 Some affected chips also crash: an interrupt or task watchdog with the backtrace in
-`esp_timer_impl_get_time` / `systimer_hal_get_counter_value`.
+`esp_timer_impl_get_time` / `systimer_hal_get_counter_value`, where the counter's snapshot
+"value valid" flag never sets.
 
 ## How it works
 
@@ -37,14 +56,24 @@ the same clock. Their difference is constant, so a task at the highest priority 
 steps `esp_timer` forward by exactly the lost time (`esp_timer_private_advance()`) and re-arms
 the `esp_timer` alarm, so timers that fell due in the meantime run at once.
 
-- Both counters are read with interrupts off and with a bounded wait, so the guard can never
-  hang on the counter itself.
-- A slow read can only make `esp_timer` look ahead, never behind, so delays cannot cause a
-  false correction. A clock that is ahead is never touched.
+- Both counters are read with interrupts off. A slow read can only make `esp_timer` look
+  ahead, never behind, so delays cannot cause a false correction. A clock that is ahead is
+  never touched.
 - A counter that stops, rather than jumps back, is stepped forward until it runs again;
   corrections less than a second apart count as one event.
 - If counter 1 itself goes backward, the guard re-learns the offset and counts it as a
   "tick counter jump" instead of acting.
+
+### A wedged snapshot handshake
+
+ESP-IDF reads a counter by requesting a snapshot and spinning, without a limit, until its
+"value valid" flag sets. If the flag never sets, every `esp_timer` reader hangs until a
+watchdog resets the board. The guard's own reads are bounded and re-request the snapshot up
+to four times; a re-request can also release the other readers, which wait on the same flag,
+and each one is counted as a "snapshot recovery". If the reads still fail for about a second,
+the guard calls `esp_system_abort()` (without logging, since the logger reads the clock), so
+the board restarts promptly with a crash record naming the cause instead of waiting for a
+watchdog.
 
 Each check takes a few microseconds; on a busy Bluetooth proxy the main loop time went from
 19 to 20 ms.
@@ -53,10 +82,13 @@ Each check takes a few microseconds; on a busy Bluetooth proxy the main loop tim
 
 - **ESP32-C6, ESP-IDF framework only.**
 - **No automatic light sleep.** Power management (`CONFIG_PM_ENABLE`) and tickless idle step
-  both counters during sleep, so the build stops with an error if either is on. Wi-Fi modem
-  sleep (`power_save_mode: LIGHT`, the ESP32 default) is fine.
-- It works around the symptom; it does not fix the cause, and it cannot prevent the watchdog
-  crash where the counter's "value valid" flag never sets.
+  both counters during sleep, so the build stops with an error if either is on.
+- **Wi-Fi modem sleep** (`power_save_mode: LIGHT`, the ESP32 default) works with the guard,
+  but danjurgens reports that with modem sleep on, the fault can also hang the Wi-Fi PHY path
+  faster than any poll can act (an interrupt watchdog reset). `power_save_mode: NONE` avoids
+  that form.
+- It works around the symptom; it does not fix the cause. A wedged handshake still costs a
+  restart if re-requesting the snapshot does not clear it.
 - `esp_timer_private_advance()` is an ESP-IDF private API. Check that the component still
   builds and behaves after ESP-IDF updates.
 - Tested on ESPHome 2026.10.0 (ESP-IDF 5.5) with Seeed XIAO ESP32-C6 boards, chip revisions
@@ -66,16 +98,18 @@ Each check takes a few microseconds; on a busy Bluetooth proxy the main loop tim
 
 ```yaml
 external_components:
-  - source: github://meeowgler/esphome-clock-guard
-    components: [clock_guard]
+  - source: github://meeowgler/esphome-systimer-guard
+    components: [systimer_guard]
 
-clock_guard:
+systimer_guard:
   corrections:
     name: "Clock Corrections"
   time_recovered:
     name: "Clock Time Recovered"
   tick_counter_jumps:
     name: "Clock Tick Counter Jumps"
+  snapshot_recoveries:
+    name: "Clock Snapshot Recoveries"
 ```
 
 ### Options
@@ -83,26 +117,29 @@ clock_guard:
 - **threshold** (*Optional*, time, default `2ms`, minimum `500us`): how far `esp_timer` may
   fall behind before it is corrected.
 - **update_interval** (*Optional*, time, default `60s`): how often the sensors publish. They
-  also publish at once after a correction.
+  also publish at once after any event.
 - **corrections** (*Optional*, sensor): number of correction events since boot.
 - **time_recovered** (*Optional*, sensor, seconds): total time put back since boot.
 - **tick_counter_jumps** (*Optional*, sensor): how often counter 1 went backward. Non-zero
   would mean the fault is not limited to counter 0.
+- **snapshot_recoveries** (*Optional*, sensor): reads that only succeeded after the snapshot
+  was re-requested.
 
-Each correction is also logged as a warning:
+Each event is also logged as a warning:
 
 ```
-[W][clock_guard]: esp_timer lost 600.000 s and was stepped forward (1 corrections, 600.0 s in total)
+[W][systimer_guard]: esp_timer lost 600.000 s and was stepped forward (1 corrections, 600.0 s in total)
 ```
 
 ### Testing it
 
 `simulate_jump(seconds)` steps `esp_timer` back the way the fault does (never further than
-the uptime allows). Keep a test button disabled by default:
+the uptime allows). `simulate_wedge()` makes the guard's own reads fail, so it should abort
+and the board restart about a second later. Keep test buttons disabled by default:
 
 ```yaml
-clock_guard:
-  id: clock_guard_1
+systimer_guard:
+  id: systimer_guard_1
 
 button:
   - platform: template
@@ -110,7 +147,13 @@ button:
     entity_category: diagnostic
     disabled_by_default: true
     on_press:
-      - lambda: id(clock_guard_1).simulate_jump(600);
+      - lambda: id(systimer_guard_1).simulate_jump(600);
+  - platform: template
+    name: "Clock Guard Wedge Test"
+    entity_category: diagnostic
+    disabled_by_default: true
+    on_press:
+      - lambda: id(systimer_guard_1).simulate_wedge();
 ```
 
 ## License
