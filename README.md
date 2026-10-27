@@ -30,6 +30,14 @@ never be larger than the counter's own value.
   of the 16 MHz counter cleared at once. The guard put the time back within its 1 ms check, and
   the board's 60-second uptime reports carried on without a gap; before the guard, the same
   fault silenced the board for the time lost. Counter 1 did not move backward.
+- **26 October 2026:** the same board lost 1149.239 s (19.2 min), bits 27, 30 and 34.
+  Corrected with no gap.
+- **27 October 2026:** a board that had never shown a stall lost 4.079 s, bits 18 and 21 to 25.
+  Events this small were invisible before: a few seconds' silence in a 60-second report never
+  looked like a stall.
+- **To 27 October 2026:** 3 real events on 2 of 12 boards since the guard went on all of them
+  on 25 October, all corrected; no stalls, no snapshot recoveries, and counter 1 never moved
+  backward.
 - Simulated 600 s jumps (see [Testing it](#testing-it)) are corrected to the millisecond.
 - A simulated wedged handshake (`simulate_wedge()`) ends in an abort about a second later, and
   the board restarts with an `Abort` crash record and reset reason "exception/panic".
