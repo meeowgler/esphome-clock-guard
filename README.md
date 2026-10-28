@@ -35,12 +35,13 @@ never be larger than the counter's own value.
 - **27 October 2026:** a board that had never shown a stall lost 4.079 s, bits 18 and 21 to 25.
   Events this small were invisible before: a few seconds' silence in a 60-second report never
   looked like a stall.
-- **27 October 2026, Wi-Fi power saving set to off (not yet confirmed applied):** to see whether
-  modem sleep sets the fault off, the worst board was set to `power_save_mode: NONE`. Seven and a
-  half hours later it lost 1166.016 s (19.4 min), bits 27, 28, 30 and 34, corrected with no gap.
-  It is not yet confirmed that the Wi-Fi driver applied NONE while Bluetooth is running (ESPHome
-  logs a refused setting only at verbose level, and the board's ping times look like modem sleep),
-  so this does not yet show whether modem sleep plays a part.
+- **27 October 2026, Wi-Fi power saving off:** to see whether modem sleep sets the fault off, the
+  worst board was switched to `power_save_mode: NONE`. Seven and a half hours later it lost
+  1166.016 s (19.4 min), bits 27, 28, 30 and 34, corrected with no gap. A diagnostic sensor
+  reading `esp_wifi_get_ps()` confirmed on 28 October that the driver keeps NONE with Bluetooth
+  running (ESPHome logs a refused setting only at verbose level, so this needed checking). So on
+  this board modem sleep is not the trigger; turning it off only avoids the Wi-Fi hang described
+  under [Limits](#limits).
 - **To 28 October 2026:** 4 real events on 2 of 12 boards since the guard went on all of them
   on 25 October, all corrected; no stalls, no snapshot recoveries, and counter 1 never moved
   backward.
@@ -100,7 +101,8 @@ Each check takes a few microseconds; on a busy Bluetooth proxy the main loop tim
 - **Wi-Fi modem sleep** (`power_save_mode: LIGHT`, the ESP32 default) works with the guard,
   but danjurgens reports that with modem sleep on, the fault can also hang the Wi-Fi PHY path
   faster than any poll can act (an interrupt watchdog reset). `power_save_mode: NONE` avoids
-  that form, if the driver applies it alongside Bluetooth (being checked; see [Results](#results)).
+  that form (the driver does apply it alongside Bluetooth), but not the fault itself: a board with
+  it set still lost 1166 s (see [Results](#results)).
 - It works around the symptom; it does not fix the cause. A wedged handshake still costs a
   restart if re-requesting the snapshot does not clear it.
 - `esp_timer_private_advance()` is an ESP-IDF private API. Check that the component still
